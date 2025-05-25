@@ -21,6 +21,7 @@ module Parser
   ) where
 
 import Control.Applicative
+import Data.List (nub)
 
 -- | Value annotated with position of parsed input starting from 0
 data Position a = Position Int a
@@ -46,23 +47,40 @@ newtype Parser a = Parser { runParser :: Input -> Parsed a }
 
 -- | Runs given 'Parser' on given input string
 parse :: Parser a -> String -> Parsed a
-parse = error "TODO: define parse"
+parse (Parser p) s = p (Position 0 s)
 
 -- | Runs given 'Parser' on given input string with erasure of @Parsed a@ to @Maybe a@
 parseMaybe :: Parser a -> String -> Maybe a
-parseMaybe = error "TODO: define parseMaybe"
+parseMaybe p s = case parse p s of
+  Parsed x _   -> Just x
+  Failed _errs -> Nothing
 
 instance Functor Parser where
-  fmap = error "TODO: define fmap (Parser)"
+  fmap f (Parser p) = Parser $ \inp ->
+    case p inp of
+      Parsed x inp' -> Parsed (f x) inp'
+      Failed errs   -> Failed errs
 
 instance Applicative Parser where
-  pure = error "TODO: define pure (Parser)"
-  (<*>) = error " TODO: define <*> (Parser)"
+  pure x = Parser $ \inp -> Parsed x inp
+  Parser pf <*> Parser pa = Parser $ \inp ->
+    case pf inp of
+      Parsed f inp' ->
+        case pa inp' of
+          Parsed x inp'' -> Parsed (f x) inp''
+          Failed errs    -> Failed errs
+      Failed errs -> Failed errs
 
 instance Alternative Parser where
-  empty = error "TODO: define empty (Parser)"
+  empty = Parser $ \_ -> Failed []
   -- Note: when both parsers fail, their errors are accumulated and *deduplicated* to simplify debugging
-  (<|>) = error " TODO: define <|> (Parser)"
+  Parser p1 <|> Parser p2 = Parser $ \inp ->
+    case p1 inp of
+      Parsed x inp' -> Parsed x inp'
+      Failed e1     ->
+        case p2 inp of
+          Parsed y inp'' -> Parsed y inp''
+          Failed e2      -> Failed (nub (e1 ++ e2))
 
 -- | Parses single character satisfying given predicate
 --
@@ -78,4 +96,9 @@ instance Alternative Parser where
 -- Failed [Position 0 EndOfInput]
 --
 satisfy :: (Char -> Bool) -> Parser Char
-satisfy = error "TODO: define satisfy"
+satisfy test = Parser $ \(Position i str) ->
+  case str of
+    []      -> Failed [Position i EndOfInput]
+    c : cs
+      | test c   -> Parsed c (Position (i+1) cs)
+      | otherwise -> Failed [Position i (Unexpected c)]

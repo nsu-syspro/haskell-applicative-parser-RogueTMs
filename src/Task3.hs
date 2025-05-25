@@ -4,8 +4,10 @@
 module Task3 where
 
 import Parser
-import Data.Char (toLower)
+import Control.Applicative (some, many, (<|>), optional)
+import Data.Char (toLower, isDigit)
 import Data.List (intercalate)
+import ParserCombinators (char, string, spaces)
 
 -- | JSON representation
 --
@@ -38,20 +40,81 @@ data JValue =
 -- Failed [PosError 0 (Unexpected '{'),PosError 1 (Unexpected '{')]
 --
 json :: Parser JValue
-json = error "TODO: define json"
+json = spaces *> value <* spaces
 
--- * Rendering helpers
+value :: Parser JValue
+value =
+      jObject
+  <|> jArray
+  <|> JString <$> jsonString
+  <|> JNumber <$> number
+  <|> JBool True  <$ string "true"
+  <|> JBool False <$ string "false"
+  <|> JNull       <$ string "null"
 
--- | Renders given JSON value as oneline string
+jsonString :: Parser String
+jsonString = char '"' *> (concat <$> many charContent) <* char '"'
+
+charContent :: Parser String
+charContent =
+      unicodeEscape
+  <|> (\c -> ['\\',c]) <$> (char '\\' *> satisfy (\c -> c `elem` "\"\\/bfnrt"))
+  <|> (:[]) <$> satisfy (\c -> c /= '"' && c /= '\\')
+
+unicodeEscape :: Parser String
+unicodeEscape =
+  (\p d1 d2 d3 d4 -> p ++ [d1,d2,d3,d4])
+    <$> string "\\u"
+    <*> satisfy isHex
+    <*> satisfy isHex
+    <*> satisfy isHex
+    <*> satisfy isHex
+
+isHex :: Char -> Bool
+isHex c =
+  (c >= '0' && c <= '9')
+  || (c >= 'a' && c <= 'f')
+  || (c >= 'A' && c <= 'F')
+
+number :: Parser Double
+number =
+  (\s ip f ex -> read (s ++ ip ++ maybe "" id f ++ maybe "" id ex))
+    <$> ((\c -> [c]) <$> char '-' <|> pure "")
+    <*> ((string "0") <|> ((:) <$> satisfy (\c -> c >= '1' && c <= '9') <*> many (satisfy isDigit)))
+    <*> optional ((:) <$> char '.' <*> some (satisfy isDigit))
+    <*> optional
+          ((\e m ds -> e : maybe "" (:[]) m ++ ds)
+             <$> satisfy (\c -> c == 'e' || c == 'E')
+             <*> optional (char '+' <|> char '-')
+             <*> some (satisfy isDigit))
+
+jArray :: Parser JValue
+jArray = JArray <$> (char '[' *> spaces *> elements <* spaces <* char ']')
+  where
+    elements =
+         (:) <$> (spaces *> value <* spaces)
+             <*> many (spaces *> char ',' *> spaces *> value <* spaces)
+     <|> pure []
+
+jObject :: Parser JValue
+jObject = JObject <$> (char '{' *> spaces *> members <* spaces <* char '}')
+  where
+    members =
+         (:) <$> member
+             <*> many (spaces *> char ',' *> spaces *> member)
+     <|> pure []
+
+member :: Parser (String, JValue)
+member =
+  (,) <$> jsonString <* spaces <* char ':' <*> (spaces *> value)
+
 render :: JValue -> String
 render = concatMap readable . renderTokens
   where
-    -- Adds some nice spacing for readability
     readable ":" = ": "
     readable "," = ", "
     readable s   = s
 
--- | Renders given JSON value as list of separate tokens ready for pretty printing
 renderTokens :: JValue -> [String]
 renderTokens JNull        = ["null"]
 renderTokens (JBool b)    = [map toLower $ show b]
@@ -63,15 +126,12 @@ renderTokens (JObject xs) = ["{"] ++ intercalate [","] (map renderPair xs) ++ ["
   renderPair :: (String, JValue) -> [String]
   renderPair (k, v) = ["\"" ++ k ++ "\""] ++ [":"] ++ renderTokens v
 
--- | Renders 'Parsed' or 'Failed' value as string
 renderParsed :: Parsed JValue -> String
 renderParsed (Parsed v _) = render v
 renderParsed (Failed err) = show err
 
--- | Parses given file as JSON and renders result
 renderJSONFile :: String -> IO String
 renderJSONFile file = renderParsed <$> parseJSONFile file
 
--- | Parses given file as JSON
 parseJSONFile :: String -> IO (Parsed JValue)
 parseJSONFile file = parse json <$> readFile file
